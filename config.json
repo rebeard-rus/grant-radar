@@ -61,9 +61,12 @@
   "max_title_len": 240,
   "require_signal_word": true,
 
-  "_bot_comment": "Поиск по архиву: пиши боту тему ('горн', 'малое предприятие') — ответит списком встречавшихся грантов. Опрос дёргает workflow bot.yml.",
+  "_bot_comment": "Поиск по архиву. Для мгновенных ответов бот запускается постоянным процессом: python radar.py --serve (см. run-bot.sh).",
   "bot_poll_seconds": 40,
-  "bot_max_results": 20,
+  "bot_page_size": 5,
+  "bot_dir_buttons": 6,
+  "serve_git_pull_seconds": 0,
+  "_serve_git_pull_comment": "0 = выключено (архив обновляется локально). На сервере поставь, напр., 900 — раз в 15 мин подтягивать свежий архив из GitHub.",
 
   "_directions_comment": "Кнопки-направления под сообщениями бота. label — что видит человек, query — что ищем в архиве (лучше корень слова из keywords). По 2 кнопки в ряд.",
   "directions": [
