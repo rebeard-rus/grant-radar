@@ -1,0 +1,42 @@
+name: grant-radar
+
+on:
+  schedule:
+    # Раз в сутки, 06:00 UTC (09:00 МСК). Гранты не обновляются часто —
+    # ежедневного обхода достаточно. GitHub может задержать запуск на 5–15 мин.
+    - cron: "0 6 * * *"
+  workflow_dispatch: {}   # кнопка "Run workflow" для ручного запуска
+
+permissions:
+  contents: write         # чтобы коммитить seen.json обратно
+
+concurrency:
+  group: grant-radar
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
+        run: pip install -r requirements.txt
+
+      - name: Run radar
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python radar.py
+
+      - name: Commit state
+        run: |
+          git config user.name  "grant-radar-bot"
+          git config user.email "actions@github.com"
+          git add seen.json pending.json archive.json 2>/dev/null || true
+          git diff --staged --quiet || git commit -m "update radar state [skip ci]"
+          git push
