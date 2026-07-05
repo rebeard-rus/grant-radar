@@ -65,6 +65,8 @@
   "bot_poll_seconds": 40,
   "bot_page_size": 5,
   "bot_dir_buttons": 6,
+  "bot_structured_only": true,
+  "_structured_comment": "true = поиск показывает только структурированные гранты из загруженных баз (--import), а новостной обход в поиск не попадает. Пока баз нет — показывается всё. false = искать по всему.",
   "serve_git_pull_seconds": 0,
   "_serve_git_pull_comment": "0 = выключено (архив обновляется локально). На сервере поставь, напр., 900 — раз в 15 мин подтягивать свежий архив из GitHub.",
 

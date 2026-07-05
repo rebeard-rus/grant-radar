@@ -345,6 +345,7 @@ def archive_upsert(archive, src, it, cfg, today):
         rec["emoji"] = src.get("emoji", "📌")
         rec["keywords"] = sorted(set(rec.get("keywords", [])) | set(kws))
         rec["last_seen"] = today
+        rec.setdefault("origin", "scan")
     else:
         archive[it["key"]] = {
             "title": it["title"],
@@ -354,6 +355,7 @@ def archive_upsert(archive, src, it, cfg, today):
             "keywords": kws,
             "first_seen": today,
             "last_seen": today,
+            "origin": "scan",  # обход = новостной поток (не в поиск по умолчанию)
         }
 
 
@@ -378,6 +380,19 @@ def search_archive(archive, query, cfg):
             results.append(rec)
     results.sort(key=lambda r: r.get("first_seen", ""), reverse=True)
     return results
+
+
+def search_view(archive, cfg):
+    """Что показывать в поиске/истории.
+
+    По умолчанию — только структурированные гранты (origin=import из
+    загруженных баз). Новостной обход (origin=scan) в поиск не попадает.
+    Если структурных записей ещё нет — показываем всё, чтобы бот не был пустым.
+    """
+    if not cfg.get("bot_structured_only", True):
+        return archive
+    structured = {k: r for k, r in archive.items() if r.get("origin") == "import"}
+    return structured or archive
 
 
 # ─────────────  Импорт внешних баз грантов (--import)  ─────────────
@@ -628,13 +643,41 @@ def direction_counts(cfg, archive):
     return out
 
 
-def format_card(n, rec):
+def rec_topics(rec, cfg):
+    """Понятные названия направлений записи (по её ключевым словам)."""
+    kws = [k.lower() for k in rec.get("keywords", [])]
+    if not kws:
+        return []
+    labels, seen = [], set()
+    for d in cfg.get("directions", []):
+        q = d.get("query", "").lower()
+        if q and d["label"] not in seen and any(q in k or k in q for k in kws):
+            labels.append(d["label"])
+            seen.add(d["label"])
+    return labels[:3] if labels else rec.get("keywords", [])[:3]
+
+
+def format_card(n, rec, cfg):
     title = (rec.get("title") or "").strip() or "(без названия)"
+    lines = [f"{num_badge(n)} <b>{esc(title)}</b>"]
+
+    topics = rec_topics(rec, cfg)
+    if topics:
+        lines.append("   🎯 " + " · ".join(esc(t) for t in topics))
+
+    extra = []
+    if rec.get("amount"):
+        extra.append(f"💰 {esc(rec['amount'])}")
+    if rec.get("deadline"):
+        extra.append(f"⏳ до {esc(rec['deadline'])}")
+    if extra:
+        lines.append("   " + "   ".join(extra))
+
     date = human_date(rec.get("first_seen"))
     fresh = " 🆕" if is_fresh(rec.get("first_seen")) else ""
     meta = " · ".join(x for x in [f"{rec.get('emoji', '📌')} {esc(rec.get('source', ''))}",
                                   date] if x.strip())
-    lines = [f"{num_badge(n)} <b>{esc(title)}</b>", f"   {meta}{fresh}"]
+    lines.append(f"   {meta}{fresh}")
     if rec.get("link"):
         lines.append(f"   🔗 <a href=\"{esc(rec['link'])}\">Открыть</a>")
     return "\n".join(lines)
@@ -664,7 +707,7 @@ def render_page(title, emoji, results, offset, page_cb, cfg, extra_top=None):
     chunk = results[offset:offset + page]
     head = (f"{emoji} <b>{esc(title)}</b>\n"
             f"Найдено: <b>{total}</b> · показываю {offset + 1}–{offset + len(chunk)}\n\n")
-    body = "\n\n".join(format_card(offset + i + 1, r) for i, r in enumerate(chunk))
+    body = "\n\n".join(format_card(offset + i + 1, r, cfg) for i, r in enumerate(chunk))
     return {"text": head + body,
             "markup": page_keyboard(page_cb, offset, page, total, extra_top)}
 
@@ -848,10 +891,10 @@ def handle_callback(data, cfg, archive):
 
 def cmd_search(cfg, query):
     """Локальный поиск: печатает результаты в консоль (без Telegram)."""
-    archive = load_json(ARCHIVE_PATH, {})
-    results = search_archive(archive, query, cfg)
+    view = search_view(load_json(ARCHIVE_PATH, {}), cfg)
+    results = search_archive(view, query, cfg)
     if not results:
-        print(f"Ничего не найдено по «{query}». В архиве {len(archive)} записей.")
+        print(f"Ничего не найдено по «{query}». В поиске {len(view)} записей.")
         return
     print(f"🔍 «{query}» — найдено {len(results)}:\n")
     for i, r in enumerate(results[:30], 1):
@@ -904,7 +947,7 @@ def bot_poll(cfg):
     """Один ограниченный цикл опроса (--poll, резерв для GitHub Actions)."""
     if not TOKEN:
         sys.exit("❌ Нет TELEGRAM_BOT_TOKEN — бот не может опрашивать Telegram.")
-    archive = load_json(ARCHIVE_PATH, {})
+    view = search_view(load_json(ARCHIVE_PATH, {}), cfg)
     offset = load_json(BOT_STATE_PATH, {}).get("offset", 0)
     window = cfg.get("bot_poll_seconds", 40)
     deadline = time.time() + window
@@ -918,7 +961,7 @@ def bot_poll(cfg):
         for up in updates:
             offset = up["update_id"] + 1
             try:
-                process_update(up, cfg, archive)
+                process_update(up, cfg, view)
             except Exception as e:
                 print(f"⚠️  апдейт {offset}: {e}")
             handled += 1
@@ -940,7 +983,7 @@ def bot_serve(cfg):
         sys.exit("❌ Нет TELEGRAM_BOT_TOKEN — задай переменную окружения перед запуском.")
     print("🤖 Грант-радар: бот запущен (long-polling). Ctrl+C — остановить.")
     offset = load_json(BOT_STATE_PATH, {}).get("offset", 0)
-    archive, mtime = {}, -1.0
+    view, mtime = {}, -1.0
     pull_every = int(cfg.get("serve_git_pull_seconds", 0))
     last_pull = 0.0
     while True:
@@ -950,8 +993,9 @@ def bot_serve(cfg):
             last_pull = now
         if ARCHIVE_PATH.exists() and ARCHIVE_PATH.stat().st_mtime != mtime:
             archive = load_json(ARCHIVE_PATH, {})
+            view = search_view(archive, cfg)
             mtime = ARCHIVE_PATH.stat().st_mtime
-            print(f"📚 архив загружен: {len(archive)} записей")
+            print(f"📚 архив загружен: {len(archive)} записей (в поиске: {len(view)})")
         try:
             updates = tg_get_updates(offset, timeout=50)
         except Exception as e:
@@ -961,7 +1005,7 @@ def bot_serve(cfg):
         for up in updates:
             offset = up["update_id"] + 1
             try:
-                process_update(up, cfg, archive)
+                process_update(up, cfg, view)
             except Exception as e:
                 print(f"⚠️  апдейт {offset}: {e}")
         if updates:
